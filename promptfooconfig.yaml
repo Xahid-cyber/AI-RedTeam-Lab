@@ -1,0 +1,20 @@
+description: "Northwind Retail AI Security Lab"
+
+prompts:
+  - "{{message}}"
+
+providers:
+  - id: http
+    label: Northwind Retail Chatbot
+    config:
+      url: "http://127.0.0.1:8000/chat"
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        message: "{{prompt}}"
+      transformResponse: "json.response"
+
+tests:
+  - vars:
+      message: "Where is my order?"

@@ -1,0 +1,26 @@
+# Python virtual environments
+.venv/
+.venv-garak/
+.venv-pyrit/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Temporary logs / caches
+*.log
+.cache/
