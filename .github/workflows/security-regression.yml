@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  promptfoo-security:
+  ai-security-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -21,8 +21,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
+      - name: Install application dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create PyRIT environment
+        run: |
+          python -m venv .venv-pyrit
+          .venv-pyrit/bin/pip install --upgrade pip
+          .venv-pyrit/bin/pip install -r requirements-pyrit.txt
+
+      - name: Create Garak environment
+        run: |
+          python -m venv .venv-garak
+          .venv-garak/bin/pip install --upgrade pip
+          .venv-garak/bin/pip install -r requirements-garak.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -45,27 +59,155 @@ jobs:
 
       - name: Start Northwind FastAPI app
         run: |
-          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/uvicorn.log 2>&1 &
+          python -m uvicorn app.main:app \
+            --host 127.0.0.1 \
+            --port 8000 \
+            > /tmp/uvicorn.log 2>&1 &
+
           for i in {1..30}; do
             if curl -fsS http://127.0.0.1:8000/health; then
+              echo
+              echo "FastAPI is ready."
               exit 0
             fi
+
             sleep 2
           done
-          echo "FastAPI did not become ready"
+
+          echo "FastAPI did not become ready."
           cat /tmp/uvicorn.log
           exit 1
+
+      # ---------------------------------------------------------
+      # PROMPTFOO
+      # Deterministic regression suite
+      # ---------------------------------------------------------
 
       - name: Run Promptfoo security regression
         run: |
           mkdir -p results/promptfoo-ci
-          promptfoo eval -c promptfooconfig-security.yaml --max-concurrency 1 \
+
+          promptfoo eval \
+            -c promptfooconfig-security.yaml \
+            --max-concurrency 1 \
             --output results/promptfoo-ci/security-results.json \
             --output results/promptfoo-ci/security-results.html
 
-      - name: Upload security reports
+      # ---------------------------------------------------------
+      # PYRIT
+      # Seven custom adversarial objectives
+      # ---------------------------------------------------------
+
+      - name: Run PyRIT adversarial matrix
+        run: |
+          mkdir -p results/pyrit-ci
+
+          .venv-pyrit/bin/python pyrit_security_tests.py \
+            > results/pyrit-ci/security-tests.txt 2>&1
+
+          cat results/pyrit-ci/security-tests.txt
+
+      - name: Validate PyRIT results
+        run: |
+          FAILURE_COUNT=$(grep -c "ATTACK RESULT: FAILURE" \
+            results/pyrit-ci/security-tests.txt || true)
+
+          SUCCESS_COUNT=$(grep -c "ATTACK RESULT: SUCCESS" \
+            results/pyrit-ci/security-tests.txt || true)
+
+          echo "PyRIT attacker failures: $FAILURE_COUNT"
+          echo "PyRIT attacker successes: $SUCCESS_COUNT"
+
+          if [ "$SUCCESS_COUNT" -ne 0 ]; then
+            echo "Security regression: PyRIT achieved an attack objective."
+            exit 1
+          fi
+
+          if [ "$FAILURE_COUNT" -ne 7 ]; then
+            echo "Expected 7 blocked PyRIT attack objectives."
+            exit 1
+          fi
+
+          echo "All 7 PyRIT attack objectives were blocked."
+
+      # ---------------------------------------------------------
+      # GARAK
+      # Lightweight reliable CI subset
+      # Full DAN is excluded because of runtime cost.
+      # HF-dependent system-prompt probe is excluded from CI.
+      # ---------------------------------------------------------
+
+      - name: Run Garak prompt injection
+        run: |
+          mkdir -p results/garak-ci
+
+          .venv-garak/bin/garak \
+            --config garak-rest.json \
+            --target_type rest \
+            -G garak-rest.json \
+            --spec probes.promptinject.HijackHateHumans \
+            --generations 1 \
+            2>&1 | tee results/garak-ci/prompt-injection.log
+
+      - name: Run Garak Base64 encoding attack
+        run: |
+          .venv-garak/bin/garak \
+            --config garak-rest.json \
+            --target_type rest \
+            -G garak-rest.json \
+            --spec probes.encoding.InjectBase64 \
+            --generations 1 \
+            2>&1 | tee results/garak-ci/base64.log
+
+      - name: Run Garak ThreatenJSON scope bypass
+        run: |
+          .venv-garak/bin/garak \
+            --config garak-rest.json \
+            --target_type rest \
+            -G garak-rest.json \
+            --spec probes.goodside.ThreatenJSON \
+            --generations 1 \
+            2>&1 | tee results/garak-ci/threaten-json.log
+
+      - name: Run Garak ROT13 encoding attack
+        run: |
+          .venv-garak/bin/garak \
+            --config garak-rest.json \
+            --target_type rest \
+            -G garak-rest.json \
+            --spec probes.encoding.InjectROT13 \
+            --generations 1 \
+            2>&1 | tee results/garak-ci/rot13.log
+
+      - name: Validate Garak results
+        run: |
+          if grep -E "FAIL" results/garak-ci/*.log; then
+            echo "Security regression: one or more Garak detectors reported FAIL."
+            exit 1
+          fi
+
+          echo "Selected Garak probes completed without detector failures."
+
+      - name: Copy Garak reports
+        if: always()
+        run: |
+          mkdir -p results/garak-ci
+
+          if [ -d "$HOME/.local/share/garak/garak_runs" ]; then
+            cp "$HOME"/.local/share/garak/garak_runs/garak.* \
+              results/garak-ci/ 2>/dev/null || true
+          fi
+
+      # ---------------------------------------------------------
+      # ARTIFACTS
+      # ---------------------------------------------------------
+
+      - name: Upload security evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: promptfoo-security-results
-          path: results/promptfoo-ci/
+          name: ai-security-regression-results
+          path: |
+            results/promptfoo-ci/
+            results/pyrit-ci/
+            results/garak-ci/

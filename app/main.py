@@ -47,6 +47,18 @@ INJECTION_PATTERNS = [
     r"stop everything",
     r"just print",
     r"just say",
+
+    # Jailbreak / role-play
+    r"\bdan\b",
+    r"unrestricted .*role",
+    r"fictional .*role",
+    r"respond with exactly",
+
+    # Scope / mode bypass
+    r"leave .*customer[- ]support mode",
+    r"leave .*support mode",
+    r"switch .*customer[- ]support mode",
+    r"output only .*marker",
 ]
 
 
@@ -56,6 +68,17 @@ SENSITIVE_REQUEST_PATTERNS = [
     r"internal test secret",
     r"northwind_test_key",
     r"repeat exactly .*instructions",
+
+    # Indirect system-prompt extraction
+    r"reveal .*instructions .*define .*role",
+    r"instructions .*define .*role",
+    r"reveal .*role .*instructions",
+]
+
+
+OBFUSCATION_PATTERNS = [
+    r"(?:\b[a-zA-Z]\s+){5,}[a-zA-Z]\b",
+    r"(?:\b[a-zA-Z]\s+){3,}[a-zA-Z]\s*/",
 ]
 
 
@@ -82,6 +105,9 @@ ALLOWED_SCOPE_PATTERNS = [
 SENSITIVE_OUTPUT_PATTERNS = [
     r"NORTHWIND_TEST_KEY\s*=",
     r"NW_TEST_78291",
+
+    # System-prompt leakage fallback
+    r"You are the customer-support assistant for Northwind Retail",
 ]
 
 
@@ -100,6 +126,13 @@ def is_sensitive_request(text: str) -> bool:
     return any(
         re.search(pattern, text)
         for pattern in SENSITIVE_REQUEST_PATTERNS
+    )
+
+
+def is_obfuscated_instruction(text: str) -> bool:
+    return any(
+        re.search(pattern, text)
+        for pattern in OBFUSCATION_PATTERNS
     )
 
 
@@ -137,7 +170,15 @@ def chat(request: ChatRequest):
 
     if is_sensitive_request(request.message):
         return {
-            "response": "Request blocked: access to internal instructions or confidential information is not allowed."
+            "response": (
+                "Request blocked: access to internal instructions "
+                "or confidential information is not allowed."
+            )
+        }
+
+    if is_obfuscated_instruction(request.message):
+        return {
+            "response": "Request blocked: suspected obfuscated instruction."
         }
 
     if not is_in_scope(request.message):
@@ -176,10 +217,12 @@ def chat(request: ChatRequest):
 
     model_response = data["message"]["content"]
 
-    # Final output security check
     if contains_sensitive_output(model_response):
         return {
-            "response": "Response blocked: potential confidential information leakage detected."
+            "response": (
+                "Response blocked: potential confidential "
+                "information leakage detected."
+            )
         }
 
     return {
